@@ -1,3 +1,5 @@
+
+
 # MySQL学习笔记
 
 ### 索引
@@ -104,12 +106,123 @@ explain返回结果字段详解：
 - extra：执行情况的说明和描述
 
   - using filesort：对数据使用外部的索引排序，称为”文件排序“，效率低
-
   - using temporary：建立临时表来暂存中间结果，常见于order by和group by，效率低
-
   - using index：SQL需要返回的列所有数据均在一棵索引树上，避免访问表的数据行，效率不错
 
-    ``` explain select uid,count(*) from user group by uid```
+  ```mysql
+  explain select uid,count(*) from user group by uid;
+  ```
 
+#### show profile 分析SQL
 
+show profiles做SQL优化时能了解时间消耗  
+
+是否支持profile：``` select @@hanve_profiling;```  
+
+开启profiing：```set profiling=1;```  
+
+执行完SQL命令之后，再执行```show profiles```指令，查看SQL语句执行的耗时  
+
+查看SQL执行过程中每个线程的状态和消耗时间``` show profile for query query_id;```
+
+#### 索引优化
+
+通过索引可以帮助用户解决大多数的MySQL性能优化问题  
+
+全值匹配：和字段匹配成功即可，该情况下索引生效，执行效率高
+
+```mysql
+create index idx_name_addr on user(name,address);
+explain select * from user where name='zhangsan' and address='杭州';
+```
+
+如果索引为多列，要遵守**最左前缀法则**（查询从索引的最左列开始，并且不跳过索引中的列）
+
+- ``` explain select * from user where name='zhangsan'; ``` 
+- 违反最左前缀法则，索引失效：```explain select * from user where address='杭州';```
+- 符合最左前缀法则但出现跳跃某一列，只有最左列索引生效
+
+其他匹配原则：
+
+- 范围查询右边的列，不使用索引
+- 在索引列上进行运算操作，索引失效
+- 字符串不加单引号，索引失效
+- 尽量使用覆盖索引，避免select *
+  - select * 需要从原表及磁盘上读取数据
+  - 而覆盖索引从索引树中就可以查询到所有数据，效率高
+- 用or分隔的条件，索引失效
+- 以%开头的like模糊查询，索引失效
+  - ```explain select * from user where name like '%赵';```失效
+  - ```explain select * from user where name like '赵%';```使用索引
+- 不用*，使用索引列```explain select name from user where name like '%赵%'```
+- 如果MySQL评估使用索引比全表更慢，则不使用索引
+- 尽量使用复合索引，如果一个表有多个单列索引，及时使用了多个索引列，也只有一个索引列生效（由MySQL优化器决定）
+
+#### SQL优化
+
+大批量插入数据
+
+- 当通过load向表加载数据时，尽量保证文件中的主键有序，提高执行效率
+- 关闭唯一性校验：导入数据前执行```set unique_checks=0```，关闭唯一性校验，结束后执行```set unique_checks=1```，恢复校验
+
+insert优化
+
+- 如果需要同时对一张表插入多行数据，应尽量使用多个值表的insert语句，这种方式将大大**降低客户端与数据库之间的连接、关闭等消耗**，效率比执行单个insert语句快
+
+  ```insert into user values(1,'Tom‘),(2,'Jerry'),(3,'Mike');```
+
+- 在事务中进行数据插入
+
+  ```mysql
+  begin;
+  insert into user values(1,'Tom‘);
+  insert into user values(2,'Jerry‘);
+  insert into user values(3,'Mike‘);
+  commit;
+  ```
+
+- 数据有序插入
+
+#### order by优化
+
+order by 后面的多个排序字段排序方式尽量相同且排序字段顺序尽量和组合索引字段顺序一致
+
+```mysql
+create index idx_emp_age_salary on emp(age,salary);
+explain select * from emp order by age;  -- using filesort;
+explain select id from emp order by id,age; -- using index;
+```
+
+通过创建合适的索引，能够减少filesort出现，但在无法让filesort消失的情况下，就需要加快filesort的排序操作。对于filesort，MySQL有两种排序算法
+
+- 两次扫描算法：在MySQL4.1之前，使用该方式排序，首先根据条件取出排序字段和行指针信息，在sort buffer完成排序后再根据行指针回表读取记录，该操作可能会导致大量随机I/O操作
+- 一次扫描算法：一次性取出满足条件的所有字段，在排序区sort buffer中排序后直接输出结果集，排序时内存开销大，但是效率比两次高
+
+#### 子查询优化
+
+使用子查询可以避免事务或者表死锁，但在一些情况下，子查询可以被更高效的连接（JOIN）代替  
+
+连接查询之所以更高效，是因为MySQL不需要在内存中创建临时表来完成逻辑上需要两个步骤的查询工作
+
+#### limit优化
+
+一般分页查询时，通过创建覆盖索引能够比较好地提升性能，但在记录太多时，查询排序的代价非常大 
+
+```mysql
+select * from user limit 9000000,10;
+```
+
+优化思路
+
+- 在索引上完成排序分页操作，最后根据主键关联回原表查询所需要的其他列内容
+
+```mysql
+select * from user a, (select id from user order by id limit 9000000,10) b where a.id = b.id;
+```
+
+- 对于主键自增的表，可以把limit查询转换成对某个位置的查询
+
+```mysql
+select * from user where id > 900000 limit 10;
+```
 
